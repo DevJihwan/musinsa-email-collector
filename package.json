@@ -1,0 +1,29 @@
+{
+  "name": "musinsa-email-collector",
+  "version": "1.0.0",
+  "description": "무신사에서 브랜드 이메일 정보를 자동 수집하는 Node.js 스크립트",
+  "main": "musinsa_collector.js",
+  "scripts": {
+    "start": "node musinsa_collector.js",
+    "test": "node musinsa_collector.js single \"테스트브랜드\" \"TESTBRAND\"",
+    "install-deps": "npm install"
+  },
+  "dependencies": {
+    "puppeteer": "^21.6.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "keywords": [
+    "musinsa",
+    "email",
+    "scraping",
+    "brand",
+    "collection"
+  ],
+  "author": "DevJihwan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
