@@ -8,11 +8,11 @@ class MusinsaEmailCollector {
         this.page = null;
         this.results = [];
         this.failedBrands = [];
-        this.delay = 3000; // 기본 지연시간 3초
+        this.delayTime = 3000; // 기본 지연시간 3초
     }
 
     // 지연 함수 (waitForTimeout 대체)
-    async delay(ms) {
+    async sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
@@ -59,10 +59,11 @@ class MusinsaEmailCollector {
             const searchUrl = `https://www.musinsa.com/search/goods?keyword=${encodedBrand}&gf=A`;
             
             console.log(`  🔍 브랜드 검색: ${brandName}`);
+            console.log(`  📍 검색 URL: ${searchUrl}`);
             await this.page.goto(searchUrl, { waitUntil: 'networkidle2' });
             
             // 검색 결과 로딩 대기
-            await this.delay(2000);
+            await this.sleep(3000);
             
             // 첫 번째 상품 링크 찾기
             const firstProductLink = await this.page.evaluate(() => {
@@ -71,6 +72,31 @@ class MusinsaEmailCollector {
             });
             
             if (!firstProductLink) {
+                // 페이지 내용 확인 (디버깅용)
+                const pageTitle = await this.page.title();
+                console.log(`  📄 페이지 제목: ${pageTitle}`);
+                
+                // 다른 상품 링크 패턴도 시도
+                const alternativeLink = await this.page.evaluate(() => {
+                    const links = [
+                        'a[href*="/product/"]',
+                        'a[href*="/goods/"]',
+                        '.product-link',
+                        '.goods-link'
+                    ];
+                    
+                    for (const selector of links) {
+                        const element = document.querySelector(selector);
+                        if (element) return element.href;
+                    }
+                    return null;
+                });
+                
+                if (alternativeLink) {
+                    console.log(`  ✅ 대안 상품 발견: ${alternativeLink}`);
+                    return alternativeLink;
+                }
+                
                 throw new Error('검색 결과에서 상품을 찾을 수 없습니다');
             }
             
@@ -90,17 +116,26 @@ class MusinsaEmailCollector {
             await this.page.goto(productUrl, { waitUntil: 'networkidle2' });
             
             // 페이지 로딩 대기
-            await this.delay(3000);
+            await this.sleep(5000);
+            
+            // 스크롤 다운 (lazy loading 대비)
+            await this.page.evaluate(() => {
+                window.scrollTo(0, document.body.scrollHeight / 2);
+            });
+            await this.sleep(2000);
             
             // 판매자 정보 버튼 찾기 및 클릭
             console.log(`  🔘 판매자 정보 버튼 클릭 시도`);
             
             const buttonClicked = await this.page.evaluate(() => {
                 // 여러 가지 방법으로 판매자 정보 버튼 찾기
-                const buttons = document.querySelectorAll('button');
+                const buttons = document.querySelectorAll('button, div[role="button"], span[role="button"]');
                 for (const button of buttons) {
                     const buttonText = button.textContent || button.innerText || '';
-                    if (buttonText.includes('판매자 정보') || buttonText.includes('판매자정보')) {
+                    if (buttonText.includes('판매자 정보') || 
+                        buttonText.includes('판매자정보') ||
+                        buttonText.includes('seller info') ||
+                        buttonText.includes('판매정보')) {
                         try {
                             button.click();
                             return true;
@@ -115,7 +150,10 @@ class MusinsaEmailCollector {
                     '[data-mds="AccordionTrigger"]',
                     'button[aria-controls*="radix"]',
                     'button[class*="AccordionTrigger"]',
-                    'button[class*="accordion"]'
+                    'button[class*="accordion"]',
+                    '.seller-info-btn',
+                    '.seller-btn',
+                    '.accordion-trigger'
                 ];
                 
                 for (const selector of alternativeSelectors) {
@@ -123,7 +161,7 @@ class MusinsaEmailCollector {
                         const elements = document.querySelectorAll(selector);
                         for (const element of elements) {
                             const text = element.textContent || element.innerText || '';
-                            if (text.includes('판매자')) {
+                            if (text.includes('판매자') || text.includes('seller')) {
                                 element.click();
                                 return true;
                             }
@@ -137,11 +175,18 @@ class MusinsaEmailCollector {
             });
             
             if (!buttonClicked) {
+                // 페이지 구조 디버깅
+                const buttons = await this.page.evaluate(() => {
+                    const allButtons = document.querySelectorAll('button');
+                    return Array.from(allButtons).map(btn => btn.textContent?.trim()).filter(text => text);
+                });
+                console.log(`  🔍 페이지의 모든 버튼: ${buttons.slice(0, 10).join(', ')}...`);
+                
                 throw new Error('판매자 정보 버튼을 찾거나 클릭할 수 없습니다');
             }
             
             // 판매자 정보 패널 로딩 대기
-            await this.delay(3000);
+            await this.sleep(5000);
             
             // 이메일 정보 추출
             console.log(`  📧 이메일 정보 추출 중`);
@@ -159,27 +204,47 @@ class MusinsaEmailCollector {
                         }
                     }
                     
-                    // 대안적인 방법: 모든 텍스트에서 이메일 패턴 찾기
-                    if (label === 'E-mail' || label === '이메일') {
-                        const allText = document.body.textContent || document.body.innerText || '';
-                        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-                        const emails = allText.match(emailRegex);
-                        if (emails && emails.length > 0) {
-                            // 일반적이지 않은 이메일 도메인 필터링
-                            const validEmails = emails.filter(email => 
-                                !email.includes('noreply') && 
-                                !email.includes('example') &&
-                                !email.includes('test')
-                            );
-                            return validEmails[0] || null;
+                    // span, div 등에서도 찾기
+                    const allElements = document.querySelectorAll('*');
+                    for (const elem of allElements) {
+                        const text = elem.textContent || elem.innerText || '';
+                        if (text.includes(label + ':') || text.includes(label + ' :')) {
+                            const parent = elem.parentElement;
+                            if (parent) {
+                                const siblings = parent.children;
+                                for (let i = 0; i < siblings.length; i++) {
+                                    if (siblings[i] === elem && i + 1 < siblings.length) {
+                                        return siblings[i + 1].textContent?.trim();
+                                    }
+                                }
+                            }
                         }
                     }
                     
                     return null;
                 };
                 
+                // 이메일 패턴으로 직접 찾기
+                const findEmailInText = () => {
+                    const allText = document.body.textContent || document.body.innerText || '';
+                    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+                    const emails = allText.match(emailRegex);
+                    if (emails && emails.length > 0) {
+                        // 일반적이지 않은 이메일 도메인 필터링
+                        const validEmails = emails.filter(email => 
+                            !email.includes('noreply') && 
+                            !email.includes('example') &&
+                            !email.includes('test') &&
+                            !email.includes('facebook') &&
+                            !email.includes('instagram')
+                        );
+                        return validEmails[0] || emails[0];
+                    }
+                    return null;
+                };
+                
                 return {
-                    email: findInfoByLabel('E-mail') || findInfoByLabel('이메일'),
+                    email: findInfoByLabel('E-mail') || findInfoByLabel('이메일') || findEmailInText(),
                     brand: findInfoByLabel('브랜드'),
                     company: findInfoByLabel('상호') || findInfoByLabel('대표자'),
                     phone: findInfoByLabel('연락처'),
@@ -258,7 +323,7 @@ class MusinsaEmailCollector {
 
     // 여러 브랜드 일괄 처리
     async processBrands(brands, options = {}) {
-        const { delay = this.delay, batchSize = 10, maxRetries = 2 } = options;
+        const { delay = this.delayTime, batchSize = 10, maxRetries = 2 } = options;
         
         console.log(`\n🚀 총 ${brands.length}개 브랜드 처리 시작`);
         console.log(`⚙️ 설정: 지연시간 ${delay}ms, 배치크기 ${batchSize}`);
@@ -271,14 +336,14 @@ class MusinsaEmailCollector {
             // 마지막 브랜드가 아닌 경우 지연
             if (i < brands.length - 1) {
                 console.log(`  ⏳ ${delay}ms 대기...`);
-                await this.delay(delay);
+                await this.sleep(delay);
             }
             
             // 배치마다 중간 저장 및 휴식
             if ((i + 1) % batchSize === 0 && i < brands.length - 1) {
                 console.log(`\n💾 중간 저장 및 30초 휴식 (${i + 1}/${brands.length} 완료)`);
                 await this.saveIntermediateResults();
-                await this.delay(30000);
+                await this.sleep(30000);
             }
         }
         
@@ -388,13 +453,13 @@ async function processFailedBrands(jsonFilePath) {
         }
         
         // 처리할 브랜드 수를 제한 (테스트용)
-        const testBrands = brandsToProcess.slice(0, 50); // 처음 50개만 테스트
+        const testBrands = brandsToProcess.slice(0, 10); // 처음 10개만 테스트
         console.log(`🧪 테스트용으로 ${testBrands.length}개 브랜드만 처리합니다.`);
         
         // 브랜드 처리
         await collector.processBrands(testBrands, {
-            delay: 3000,      // 3초 지연 (더 짧게)
-            batchSize: 5,     // 5개씩 배치 처리 (더 작게)
+            delay: 5000,      // 5초 지연
+            batchSize: 3,     // 3개씩 배치 처리 (더 작게)
             maxRetries: 2     // 최대 2회 재시도
         });
         
