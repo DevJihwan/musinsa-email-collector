@@ -59,7 +59,6 @@ class MusinsaEmailCollector {
             const searchUrl = `https://www.musinsa.com/search/goods?keyword=${encodedBrand}&gf=A`;
             
             console.log(`  🔍 브랜드 검색: ${brandName}`);
-            console.log(`  📍 검색 URL: ${searchUrl}`);
             await this.page.goto(searchUrl, { waitUntil: 'networkidle2' });
             
             // 검색 결과 로딩 대기
@@ -72,10 +71,6 @@ class MusinsaEmailCollector {
             });
             
             if (!firstProductLink) {
-                // 페이지 내용 확인 (디버깅용)
-                const pageTitle = await this.page.title();
-                console.log(`  📄 페이지 제목: ${pageTitle}`);
-                
                 // 다른 상품 링크 패턴도 시도
                 const alternativeLink = await this.page.evaluate(() => {
                     const links = [
@@ -175,13 +170,6 @@ class MusinsaEmailCollector {
             });
             
             if (!buttonClicked) {
-                // 페이지 구조 디버깅
-                const buttons = await this.page.evaluate(() => {
-                    const allButtons = document.querySelectorAll('button');
-                    return Array.from(allButtons).map(btn => btn.textContent?.trim()).filter(text => text);
-                });
-                console.log(`  🔍 페이지의 모든 버튼: ${buttons.slice(0, 10).join(', ')}...`);
-                
                 throw new Error('판매자 정보 버튼을 찾거나 클릭할 수 없습니다');
             }
             
@@ -341,9 +329,9 @@ class MusinsaEmailCollector {
             
             // 배치마다 중간 저장 및 휴식
             if ((i + 1) % batchSize === 0 && i < brands.length - 1) {
-                console.log(`\n💾 중간 저장 및 30초 휴식 (${i + 1}/${brands.length} 완료)`);
+                console.log(`\n💾 중간 저장 및 60초 휴식 (${i + 1}/${brands.length} 완료)`);
                 await this.saveIntermediateResults();
-                await this.sleep(30000);
+                await this.sleep(60000); // 1분 휴식
             }
         }
         
@@ -424,7 +412,7 @@ class MusinsaEmailCollector {
     }
 }
 
-// 메인 실행 함수
+// 메인 실행 함수 - 전체 브랜드 처리
 async function processFailedBrands(jsonFilePath) {
     const collector = new MusinsaEmailCollector();
     
@@ -452,19 +440,26 @@ async function processFailedBrands(jsonFilePath) {
             return;
         }
         
-        // 처리할 브랜드 수를 제한 (테스트용)
-        const testBrands = brandsToProcess.slice(0, 10); // 처음 10개만 테스트
-        console.log(`🧪 테스트용으로 ${testBrands.length}개 브랜드만 처리합니다.`);
+        console.log(`\n🎯 전체 ${brandsToProcess.length}개 브랜드 처리를 시작합니다.`);
+        console.log(`⏱️  예상 소요시간: 약 ${Math.ceil(brandsToProcess.length * 15 / 60)}분`);
         
-        // 브랜드 처리
-        await collector.processBrands(testBrands, {
-            delay: 5000,      // 5초 지연
-            batchSize: 3,     // 3개씩 배치 처리 (더 작게)
+        // 전체 브랜드 처리 - 안정적인 설정
+        await collector.processBrands(brandsToProcess, {
+            delay: 4000,      // 4초 지연 (안정성 우선)
+            batchSize: 15,    // 15개씩 배치 처리
             maxRetries: 2     // 최대 2회 재시도
         });
         
         // 결과 저장
         await collector.saveResults();
+        
+        // 최종 통계
+        console.log(`\n📈 === 최종 통계 ===`);
+        console.log(`총 처리: ${brandsToProcess.length}개`);
+        console.log(`성공: ${collector.results.length}개`);
+        console.log(`실패: ${collector.failedBrands.length}개`);
+        console.log(`성공률: ${((collector.results.length / brandsToProcess.length) * 100).toFixed(1)}%`);
+        console.log(`수집된 이메일: ${collector.results.length}개`);
         
     } catch (error) {
         console.error('❌ 전체 프로세스 오류:', error);
@@ -510,6 +505,11 @@ if (require.main === module) {
 예시:
   node musinsa_collector.js brand_email_collection_final_1750013198088.json
   node musinsa_collector.js single "이스트팩" "EASTPAK"
+
+⚠️  주의사항:
+  - 전체 처리시 약 3-6시간 소요 예상
+  - 중간에 중단하더라도 임시 파일에 결과가 저장됩니다
+  - IP 차단 방지를 위해 적절한 지연시간이 적용됩니다
         `);
         process.exit(1);
     }
