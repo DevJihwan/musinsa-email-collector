@@ -9,6 +9,7 @@ class MusinsaEmailCollector {
         this.results = [];
         this.failedBrands = [];
         this.delayTime = 3000; // 기본 지연시간 3초
+        this.resumeMode = false;
     }
 
     // 지연 함수 (waitForTimeout 대체)
@@ -45,6 +46,90 @@ class MusinsaEmailCollector {
         });
         
         console.log('브라우저 초기화 완료');
+    }
+
+    // 이전 결과 파일들을 찾아서 로드
+    async loadPreviousResults() {
+        try {
+            const files = await fs.readdir('./');
+            
+            // 임시 파일들과 결과 파일들 찾기
+            const tempFiles = files.filter(f => f.startsWith('musinsa_temp_')).sort();
+            const successFiles = files.filter(f => f.startsWith('musinsa_email_success_')).sort();
+            const failedFiles = files.filter(f => f.startsWith('musinsa_email_failed_')).sort();
+            
+            // 가장 최근 파일들 사용
+            const latestTemp = tempFiles[tempFiles.length - 1];
+            const latestSuccess = successFiles[successFiles.length - 1];
+            const latestFailed = failedFiles[failedFiles.length - 1];
+            
+            console.log(`\n🔍 이전 결과 파일 검색 중...`);
+            
+            // 임시 파일이 있으면 우선 사용
+            if (latestTemp) {
+                console.log(`📁 임시 파일 발견: ${latestTemp}`);
+                const tempData = JSON.parse(await fs.readFile(latestTemp, 'utf8'));
+                this.results = tempData.results || [];
+                this.failedBrands = tempData.failed || [];
+                this.resumeMode = true;
+                console.log(`✅ 기존 결과 로드: 성공 ${this.results.length}개, 실패 ${this.failedBrands.length}개`);
+                return;
+            }
+            
+            // 완료된 결과 파일들 사용
+            if (latestSuccess || latestFailed) {
+                if (latestSuccess) {
+                    console.log(`📁 성공 파일 발견: ${latestSuccess}`);
+                    const successData = JSON.parse(await fs.readFile(latestSuccess, 'utf8'));
+                    this.results = Array.isArray(successData) ? successData : successData.results || [];
+                }
+                
+                if (latestFailed) {
+                    console.log(`📁 실패 파일 발견: ${latestFailed}`);
+                    const failedData = JSON.parse(await fs.readFile(latestFailed, 'utf8'));
+                    this.failedBrands = Array.isArray(failedData) ? failedData : failedData.failed || [];
+                }
+                
+                this.resumeMode = true;
+                console.log(`✅ 기존 결과 로드: 성공 ${this.results.length}개, 실패 ${this.failedBrands.length}개`);
+                return;
+            }
+            
+            console.log(`📭 이전 결과 파일이 없습니다. 새로 시작합니다.`);
+            
+        } catch (error) {
+            console.log(`⚠️  이전 결과 로드 실패: ${error.message}. 새로 시작합니다.`);
+        }
+    }
+
+    // 이미 처리된 브랜드 제외
+    filterUnprocessedBrands(allBrands) {
+        const processedBrandIds = new Set();
+        
+        // 성공한 브랜드들의 ID 수집
+        this.results.forEach(result => {
+            if (result.uniqueId) processedBrandIds.add(result.uniqueId);
+            if (result.brandName) processedBrandIds.add(result.brandName);
+        });
+        
+        // 실패한 브랜드들의 ID 수집
+        this.failedBrands.forEach(failed => {
+            if (failed.uniqueId) processedBrandIds.add(failed.uniqueId);
+            if (failed.brandName) processedBrandIds.add(failed.brandName);
+        });
+        
+        // 처리되지 않은 브랜드만 필터링
+        const unprocessedBrands = allBrands.filter(brand => {
+            return !processedBrandIds.has(brand.uniqueId) && 
+                   !processedBrandIds.has(brand.brandName);
+        });
+        
+        console.log(`\n📊 진행 상황:`);
+        console.log(`  - 전체 브랜드: ${allBrands.length}개`);
+        console.log(`  - 이미 처리됨: ${allBrands.length - unprocessedBrands.length}개`);
+        console.log(`  - 남은 브랜드: ${unprocessedBrands.length}개`);
+        
+        return unprocessedBrands;
     }
 
     // 브랜드명을 URL 인코딩
@@ -412,12 +497,17 @@ class MusinsaEmailCollector {
     }
 }
 
-// 메인 실행 함수 - 전체 브랜드 처리
-async function processFailedBrands(jsonFilePath) {
+// 메인 실행 함수 - 전체 브랜드 처리 (이어서 하기 지원)
+async function processFailedBrands(jsonFilePath, resumeMode = true) {
     const collector = new MusinsaEmailCollector();
     
     try {
         await collector.init();
+        
+        // 이어서 하기 모드인 경우 기존 결과 로드
+        if (resumeMode) {
+            await collector.loadPreviousResults();
+        }
         
         // 기존 JSON 파일 로드
         console.log(`📂 JSON 파일 로드: ${jsonFilePath}`);
@@ -425,22 +515,28 @@ async function processFailedBrands(jsonFilePath) {
         const originalData = JSON.parse(fileContent);
         
         // 실패 및 스킵된 브랜드 결합
-        const brandsToProcess = [
+        let brandsToProcess = [
             ...(originalData.failedResults || []),
             ...(originalData.skippedResults || [])
         ];
         
-        console.log(`📋 처리 대상:`);
+        console.log(`📋 원본 처리 대상:`);
         console.log(`  - 실패 브랜드: ${originalData.failedResults?.length || 0}개`);
         console.log(`  - 스킵 브랜드: ${originalData.skippedResults?.length || 0}개`);
         console.log(`  - 총 처리: ${brandsToProcess.length}개`);
         
+        // 이어서 하기 모드인 경우 처리되지 않은 브랜드만 필터링
+        if (resumeMode && collector.resumeMode) {
+            brandsToProcess = collector.filterUnprocessedBrands(brandsToProcess);
+        }
+        
         if (brandsToProcess.length === 0) {
-            console.log('❌ 처리할 브랜드가 없습니다.');
+            console.log('🎉 모든 브랜드 처리가 완료되었습니다!');
+            await collector.saveResults();
             return;
         }
         
-        console.log(`\n🎯 전체 ${brandsToProcess.length}개 브랜드 처리를 시작합니다.`);
+        console.log(`\n🎯 ${collector.resumeMode ? '이어서' : '새로 시작'} ${brandsToProcess.length}개 브랜드 처리를 시작합니다.`);
         console.log(`⏱️  예상 소요시간: 약 ${Math.ceil(brandsToProcess.length * 15 / 60)}분`);
         
         // 전체 브랜드 처리 - 안정적인 설정
@@ -454,11 +550,13 @@ async function processFailedBrands(jsonFilePath) {
         await collector.saveResults();
         
         // 최종 통계
+        const totalOriginal = (originalData.failedResults?.length || 0) + (originalData.skippedResults?.length || 0);
         console.log(`\n📈 === 최종 통계 ===`);
-        console.log(`총 처리: ${brandsToProcess.length}개`);
-        console.log(`성공: ${collector.results.length}개`);
-        console.log(`실패: ${collector.failedBrands.length}개`);
-        console.log(`성공률: ${((collector.results.length / brandsToProcess.length) * 100).toFixed(1)}%`);
+        console.log(`원본 총 브랜드: ${totalOriginal}개`);
+        console.log(`이번 처리: ${brandsToProcess.length}개`);
+        console.log(`누적 성공: ${collector.results.length}개`);
+        console.log(`누적 실패: ${collector.failedBrands.length}개`);
+        console.log(`전체 성공률: ${((collector.results.length / totalOriginal) * 100).toFixed(1)}%`);
         console.log(`수집된 이메일: ${collector.results.length}개`);
         
     } catch (error) {
@@ -499,15 +597,18 @@ if (require.main === module) {
     if (args.length === 0) {
         console.log(`
 사용법:
-  node musinsa_collector.js <JSON파일경로>              # 실패/스킵 브랜드 일괄처리
-  node musinsa_collector.js single <한글브랜드명> [영어브랜드명]  # 단일 브랜드 처리
+  node musinsa_collector.js <JSON파일경로>                    # 이어서하기 (기본값)
+  node musinsa_collector.js <JSON파일경로> --fresh             # 새로 시작
+  node musinsa_collector.js single <한글브랜드명> [영어브랜드명]   # 단일 브랜드 처리
 
 예시:
   node musinsa_collector.js brand_email_collection_final_1750013198088.json
+  node musinsa_collector.js brand_email_collection_final_1750013198088.json --fresh
   node musinsa_collector.js single "이스트팩" "EASTPAK"
 
 ⚠️  주의사항:
-  - 전체 처리시 약 3-6시간 소요 예상
+  - 이어서하기: 기존 결과 파일을 찾아서 이어서 처리합니다
+  - 새로시작: 기존 결과를 무시하고 처음부터 다시 시작합니다
   - 중간에 중단하더라도 임시 파일에 결과가 저장됩니다
   - IP 차단 방지를 위해 적절한 지연시간이 적용됩니다
         `);
@@ -521,7 +622,8 @@ if (require.main === module) {
         }
         processSingleBrand(args[1], args[2]).catch(console.error);
     } else {
-        processFailedBrands(args[0]).catch(console.error);
+        const resumeMode = !args.includes('--fresh');
+        processFailedBrands(args[0], resumeMode).catch(console.error);
     }
 }
 
